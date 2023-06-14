@@ -32,7 +32,9 @@ from fcp.tensorflow import serve_slices as serve_slices_registry
 class _BaseSession:
   """Base class for a Plan-based TensorFlow session."""
 
-  def __init__(self, plan: plan_pb2.Plan, checkpoint: bytes):
+  def __init__(self, plan: plan_pb2.Plan):
+    if len(plan.phase) != 1:
+      raise ValueError('plan must contain exactly 1 phase.')
     if not plan.phase[0].HasField('server_phase'):
       raise ValueError('plan.phase[0] is missing server_phase.')
 
@@ -47,25 +49,6 @@ class _BaseSession:
       tf.import_graph_def(graph_def, name='')
     self._session = tf.compat.v1.Session(graph=graph)
     self._plan = plan
-    self._restore_state(plan.server_savepoint, checkpoint)
-    self._maybe_run(plan.phase[0].server_phase.phase_init_op)
-
-    serve_slices_calls = []
-
-    def record_serve_slices_call(*args):
-      served_at_id = str(uuid.uuid4())
-      serve_slices_calls.append((served_at_id, args))
-      return served_at_id
-
-    with serve_slices_registry.register_serve_slices_callback(
-        record_serve_slices_call
-    ) as token:
-      self._client_checkpoint = self._save_state(
-          plan.phase[0].server_phase.write_client_init, session_token=token
-      )
-    self._slices = {
-        k: self._build_slices(*args) for k, args in serve_slices_calls
-    }
 
   def __enter__(self) -> '_BaseSession':
     self._session.__enter__()
@@ -194,8 +177,23 @@ class Session(_BaseSession):
     super().__init__(plan)
     self._restore_state(plan.server_savepoint, checkpoint)
     self._maybe_run(plan.phase[0].server_phase.phase_init_op)
-    self._client_checkpoint = self._save_state(
-        plan.phase[0].server_phase.write_client_init)
+
+    serve_slices_calls = []
+
+    def record_serve_slices_call(*args):
+      served_at_id = str(uuid.uuid4())
+      serve_slices_calls.append((served_at_id, args))
+      return served_at_id
+
+    with serve_slices_registry.register_serve_slices_callback(
+        record_serve_slices_call
+    ) as token:
+      self._client_checkpoint = self._save_state(
+          plan.phase[0].server_phase.write_client_init, session_token=token
+      )
+    self._slices = {
+        k: self._build_slices(*args) for k, args in serve_slices_calls
+    }
 
   @functools.cached_property
   def client_plan(self) -> bytes:
